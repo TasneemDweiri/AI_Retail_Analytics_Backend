@@ -1,19 +1,19 @@
-"""
-Main settings of the app.
-"""
-
-from pydantic import Field
-
 from .base import PBaseSettings
 
 
-class AllSettings(PBaseSettings):
-    """..."""
+class MainSettings(PBaseSettings):
+    # ClickHouse
+    D_HOST: str = "localhost"
+    D_PORT: int = 8123
+    D_USER: str = "default"
+    D_PASSWORD: str = ""
 
-    D_HOST: str | None = Field(default=None)
-    D_PORT: int | None = Field(default=None)
-    D_USER: str | None = Field(default=None)
-    D_PASSWORD: str | None = Field(default=None)
-    OPENAI_API_KEY: str | None = Field(default=None)
-    OPENAI_BASE_URL: str | None = Field(default=None)
-    MISTRAL_API_KEY: str | None = Field(default=None)
+    # OpenAI-compatible LLM endpoint
+    OPENAI_API_KEY: str
+    OPENAI_BASE_URL: str
+
+    # Mistral / Voxtral
+    MISTRAL_API_KEY: str
+
+
+settings = MainSettings()
