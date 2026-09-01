@@ -1,184 +1,418 @@
-# Retail Data Query API
+# AI Retail Analytics Backend
 
-An intelligent data analytics API built during an internship at Revest that enables natural language querying of retail data warehouses through both text and voice interfaces. The system uses AI agents to transform user questions into SQL queries and return formatted results.
+An AI-powered backend for querying retail warehouse data through **natural-language and voice interfaces**.
 
-## Features
+Built with **FastAPI**, the system combines LLM-based agent orchestration, schema-aware text-to-SQL generation, ClickHouse data access, and speech-to-text processing into a unified analytics workflow.
 
-- **Text-to-SQL Agent**: Converts natural language questions into SQL queries and retrieves data from ClickHouse
-- **Voice Query Support**: Accepts audio input, transcribes it using Mistral's Voxtral, and processes queries
-- **Automatic Schema Discovery**: Dynamically fetches and utilizes database schema for accurate query generation
-- **Formatted Responses**: Returns results in properly formatted Markdown/MDX with tables, headers, and styling
-- **RESTful API**: FastAPI-based endpoints for easy integration
-- **CORS Enabled**: Ready for frontend integration
+The project was developed during my AI Engineering internship at **Revest** and focuses on backend architecture, asynchronous AI workflows, database integration, and LLM-powered analytics.
+
+---
+
+## Overview
+
+Traditional retail analytics often requires users to understand database schemas and write SQL queries manually.
+
+This backend allows users to ask questions in natural language, such as:
+
+* What are the best-selling products?
+* Which stores generated the highest revenue?
+* How did sales perform during a specific period?
+* What categories contributed most to total sales?
+
+The backend converts these questions into SQL using an LLM agent, executes the generated queries against **ClickHouse**, and returns the resulting analytics data.
+
+The same workflow also supports **voice input**, where uploaded audio is first transcribed using **Mistral Voxtral** before being processed by the analytics agent.
+
+---
+
+## Key Features
+
+### FastAPI Backend
+
+* RESTful endpoints built with FastAPI
+* Typed request and response models using Pydantic
+* Automatic OpenAPI/Swagger documentation
+* Input validation and structured API responses
+* HTTP exception and error handling
+* CORS configuration for frontend integration
+* Service-status endpoint
+
+### LLM Agent Orchestration
+
+* Agentic workflows built using **Agno**
+* Integration with **OpenAI gpt-oss**
+* Tool-based SQL execution
+* Prompt orchestration for database analytics
+* Asynchronous LLM execution using Python `async/await`
+
+### Schema-Aware Text-to-SQL
+
+The agent dynamically receives the current ClickHouse database schema before generating SQL.
+
+This allows the model to understand:
+
+* available tables
+* available columns
+* database structure
+* relevant context for SQL generation
+
+The generated SQL is then executed through an agent tool against ClickHouse.
+
+### Voice Query Support
+
+The backend also accepts audio queries.
+
+Uploaded audio is:
+
+1. Read asynchronously by the FastAPI service.
+2. Sent to **Mistral Voxtral** for speech-to-text transcription.
+3. Converted into a natural-language query.
+4. Passed through the same text-to-SQL agent pipeline.
+5. Executed against ClickHouse.
+6. Returned as structured analytics results.
+
+### Backend Performance & Reliability
+
+The service includes several backend optimizations:
+
+* asynchronous request handling
+* lazy LLM agent initialization
+* cached ClickHouse client creation
+* cached database schema discovery using `lru_cache`
+* environment-based configuration using Pydantic settings
+* structured exception handling
+* reusable database and agent components
+
+---
+
+## System Architecture
+
+```text
+                         ┌──────────────────────┐
+                         │        Client        │
+                         │  Frontend / Swagger  │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │       FastAPI        │
+                         │                      │
+                         │ Validation           │
+                         │ Pydantic Models      │
+                         │ Error Handling       │
+                         │ CORS                 │
+                         └──────────┬───────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │                               │
+                    ▼                               ▼
+          ┌──────────────────┐            ┌──────────────────┐
+          │    Text Query    │            │   Voice Query    │
+          └────────┬─────────┘            └────────┬─────────┘
+                   │                               │
+                   │                               ▼
+                   │                    ┌──────────────────────┐
+                   │                    │   Mistral Voxtral    │
+                   │                    │   Speech-to-Text     │
+                   │                    └──────────┬───────────┘
+                   │                               │
+                   └───────────────┬───────────────┘
+                                   │
+                                   ▼
+                         ┌──────────────────────┐
+                         │     Agno Agent       │
+                         │   OpenAI gpt-oss     │
+                         └──────────┬───────────┘
+                                    │
+                                    │ Schema Context
+                                    ▼
+                         ┌──────────────────────┐
+                         │     Text-to-SQL      │
+                         │     Generation       │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │   SQL Agent Tool     │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │      ClickHouse      │
+                         │  Retail Warehouse    │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │ Analytics Response   │
+                         └──────────────────────┘
+```
+
+---
+
+## Request Workflows
+
+### Natural-Language Query
+
+```text
+User Question
+      ↓
+FastAPI /text-query
+      ↓
+Pydantic Validation
+      ↓
+Load ClickHouse Schema
+      ↓
+Agno LLM Agent
+      ↓
+Schema-Aware SQL Generation
+      ↓
+SQL Execution Tool
+      ↓
+ClickHouse
+      ↓
+Structured Analytics Response
+```
+
+### Voice Query
+
+```text
+Audio Upload
+      ↓
+FastAPI /voice-query
+      ↓
+Async File Processing
+      ↓
+Mistral Voxtral
+      ↓
+Speech-to-Text
+      ↓
+Natural-Language Query
+      ↓
+Agno LLM Agent
+      ↓
+Text-to-SQL
+      ↓
+ClickHouse
+      ↓
+Structured Analytics Response
+```
+
+---
 
 ## Tech Stack
 
-- **Framework**: FastAPI
-- **Database**: ClickHouse
-- **AI/ML**: 
-  - OpenAI GPT for text-to-SQL generation (via Agno agent framework)
-  - Mistral Voxtral for speech-to-text transcription
-- **Agent Framework**: Agno
-- **Language**: Python 3.x
+| Area                    | Technology                               |
+| ----------------------- | ---------------------------------------- |
+| Backend                 | Python, FastAPI                          |
+| API Models & Validation | Pydantic                                 |
+| Async Processing        | Python `async/await`                     |
+| Agent Framework         | Agno                                     |
+| LLM                     | OpenAI gpt-oss                           |
+| Speech-to-Text          | Mistral Voxtral                          |
+| Analytics Database      | ClickHouse                               |
+| Query Generation        | LLM-based Text-to-SQL                    |
+| API Documentation       | OpenAPI / Swagger                        |
+| Server                  | Uvicorn                                  |
+| Configuration           | Environment variables, Pydantic Settings |
+| Integration             | REST APIs, CORS                          |
 
-## Project Structure
+---
 
+## API Endpoints
+
+### `GET /`
+
+Service-status endpoint used to verify that the backend is running.
+
+### `POST /text-query`
+
+Processes a natural-language retail analytics question.
+
+The backend:
+
+1. validates the request,
+2. loads the ClickHouse schema,
+3. sends schema context and the question to the LLM agent,
+4. generates and executes SQL,
+5. returns the analytics result.
+
+### `POST /voice-query`
+
+Processes an uploaded voice query.
+
+The backend:
+
+1. asynchronously reads the audio file,
+2. transcribes it using Mistral Voxtral,
+3. sends the transcription through the text-to-SQL agent,
+4. executes the resulting query,
+5. returns the analytics result.
+
+---
+
+## Interactive API Documentation
+
+FastAPI automatically generates interactive API documentation.
+
+After starting the backend, open:
+
+```text
+/docs
 ```
-.
-├── main.py                 # Main application file with API endpoints
-├── settings/
-│   └── main_settings.py   # Configuration and environment variables
-└── README.md              # This file
-```
 
-## Prerequisites
+The Swagger interface can be used to inspect the API models and test the available endpoints directly.
 
-- Python 3.8+
-- ClickHouse database with `retail_dw` schema
-- OpenAI API key (or compatible endpoint)
-- Mistral API key
-- Required Python packages (see Installation)
+---
 
-## Installation
+## Getting Started
 
-1. Clone the repository:
+### Prerequisites
+
+You will need:
+
+* Python
+* access to a ClickHouse database
+* credentials for the configured LLM service
+* Mistral credentials for voice transcription
+
+---
+
+### 1. Clone the Repository
+
 ```bash
 git clone <repository-url>
-cd <project-directory>
+cd AI_Retail_Analytics_Backend
 ```
 
-2. Install dependencies:
+### 2. Create a Virtual Environment
+
+macOS / Linux:
+
 ```bash
-pip install fastapi uvicorn clickhouse-connect agno mistralai pydantic
+python -m venv .venv
+source .venv/bin/activate
 ```
 
-3. Set up environment variables in `settings/main_settings.py` or as environment variables:
-```python
-D_HOST=<clickhouse-host>
-D_PORT=<clickhouse-port>
-D_USER=<clickhouse-username>
-D_PASSWORD=<clickhouse-password>
-OPENAI_API_KEY=<your-openai-key>
-OPENAI_BASE_URL=<openai-base-url>
-MISTRAL_API_KEY=<your-mistral-key>
+Windows:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
 ```
 
-## Usage
+### 3. Install Dependencies
 
-### Starting the Server
+```bash
+pip install -r requirements.txt
+```
 
-Run the FastAPI server:
+### 4. Configure Environment Variables
+
+Configure the credentials and connection settings required by the application, including:
+
+* LLM API credentials
+* Mistral API credentials
+* ClickHouse host and connection information
+* ClickHouse database credentials
+
+The backend loads configuration through Pydantic settings rather than hardcoding credentials into the application.
+
+### 5. Start the Backend
+
 ```bash
 uvicorn main:app --reload
 ```
 
-The API will be available at `http://localhost:8000`
+The service will start locally through Uvicorn.
 
-### API Endpoints
+Use the generated `/docs` endpoint to explore and test the API.
 
-#### 1. Root Endpoint
-```http
-GET /
-```
-Returns API status and available endpoints.
+---
 
-#### 2. Text Query
-```http
-POST /text-query
-Content-Type: application/json
+## Backend Design
 
-{
-  "question": "What are the top 5 selling products this month?"
-}
-```
+### Dynamic Schema Discovery
 
-**Response:**
-```json
-{
-  "question": "What are the top 5 selling products this month?",
-  "answer": "# Sales Analysis Results\n\n| Product | Sales | Units |\n|---------|------:|------:|\n| ...",
-  "success": true
-}
-```
+Rather than hardcoding the retail warehouse schema into the LLM prompt, the application retrieves schema information from ClickHouse.
 
-#### 3. Voice Query
-```http
-POST /voice-query
-Content-Type: multipart/form-data
+This schema is supplied to the agent as context before SQL generation.
 
-file: <audio-file>
+This design makes the text-to-SQL workflow more adaptable to changes in the underlying database structure.
+
+### Tool-Based Database Access
+
+The LLM does not directly access the database.
+
+Instead, database query execution is exposed to the agent through controlled tools.
+
+The workflow separates:
+
+```text
+Natural-Language Understanding
+        ↓
+SQL Generation
+        ↓
+Tool Invocation
+        ↓
+Database Execution
 ```
 
-**Response:**
-```json
-{
-  "transcription": "What are the top selling products?",
-  "answer": "# Sales Analysis Results\n...",
-  "success": true
-}
-```
+This provides a clearer separation between model reasoning and application-level database access.
 
-### Interactive CLI Mode
+### Cached Database Resources
 
-Run the CLI interface for direct interaction:
-```python
-import asyncio
-from main import cli_main
+Database resources that do not need to be rebuilt for every request are cached.
 
-asyncio.run(cli_main())
-```
+The application uses `lru_cache` for components such as:
 
-## How It Works
+* ClickHouse client initialization
+* database schema retrieval
 
-1. **Text Query Flow**:
-   - User submits a natural language question
-   - Agent analyzes the question against available database schema
-   - Generates appropriate SQL query
-   - Executes query on ClickHouse
-   - Formats results in Markdown and returns to user
+This avoids unnecessary repeated initialization during request processing.
 
-2. **Voice Query Flow**:
-   - User uploads audio file
-   - Mistral Voxtral transcribes audio to text
-   - Transcribed text follows the same flow as text queries
-   - Returns both transcription and answer
+### Lazy Agent Initialization
 
-3. **Schema-Aware Querying**:
-   - System automatically fetches table and column schemas from ClickHouse
-   - Agent uses schema information to generate valid SQL queries
-   - Prevents errors from non-existent tables or columns
+The LLM agent is initialized only when it is needed rather than being recreated for every API request.
 
-## Response Format
+This reduces unnecessary initialization overhead and keeps agent configuration centralized.
 
-All responses are formatted in Markdown with:
-- Headers for sections
-- Tables with proper alignment
-- Bold text for important metrics
-- Code formatting for technical terms
-- Lists and blockquotes for clarity
+### Asynchronous AI Workflows
 
-## Configuration
+The backend uses Python `async/await` for asynchronous operations, including AI-agent execution and file processing.
 
-The agent's behavior can be customized through the system message in `build_system_message()`. Key configurations include:
-- Response formatting rules
-- Query generation guidelines
-- Data presentation preferences
+This prevents long-running external AI calls from unnecessarily blocking the application workflow.
 
-## Error Handling
+---
 
-The API includes comprehensive error handling for:
-- Empty or invalid queries
-- Database connection issues
-- Audio transcription failures
-- Agent initialization problems
+## What This Project Demonstrates
 
-## Development Notes
+This project focuses on the backend engineering required to integrate LLMs into real applications, including:
 
-- Agent is lazily initialized to prevent startup failures
-- ClickHouse client and schema are cached using `@lru_cache`
-- CORS is configured for development (update for production)
-- Internal reasoning tokens are cleaned from agent responses
+* designing RESTful AI services
+* building asynchronous Python workflows
+* integrating external LLM and speech services
+* orchestrating LLM agents and tools
+* connecting model inference with databases
+* implementing schema-aware text-to-SQL
+* designing typed API contracts
+* handling API validation and errors
+* integrating backend services with frontend applications
+* managing application configuration
+* optimizing reusable backend resources through caching
 
-## Acknowledgments
+---
 
-Built during an internship at **Revest** as part of a data analytics initiative.
+## Project Context
+
+This project was developed during my **AI Engineering internship at Revest** as part of my work with LLM agents, backend services, model inference, database integrations, and agentic AI workflows.
+
+The repository demonstrates the backend implementation of an AI-powered retail analytics system capable of processing both text and voice requests.
+
+---
+
+## Author
+
+**Tasneem Dweiri**
+AI Backend Engineer
+B.S. Artificial Intelligence — University of Jordan
