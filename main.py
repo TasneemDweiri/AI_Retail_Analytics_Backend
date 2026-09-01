@@ -1,345 +1,314 @@
+import asyncio
 from functools import lru_cache
-from textwrap import dedent
-from typing import Any, Dict, List
 
 import clickhouse_connect
 from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.tools import tool
+from agno.models.openai.like import OpenAILike
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from mistralai import Mistral
 from pydantic import BaseModel
 
-from settings.main_settings import AllSettings
-
-# -------------------- Settings --------------------
-
-api_settings = AllSettings()
-
-# -------------------- ClickHouse Client --------------------
+from settings.main_settings import settings
 
 
-@lru_cache(maxsize=1)
-def get_client():
-    return clickhouse_connect.get_client(
-        host=api_settings.D_HOST,
-        port=api_settings.D_PORT,
-        username=api_settings.D_USER,
-        password=api_settings.D_PASSWORD,
-    )
-
-
-# -------------------- Query Result Model --------------------
-
-
-class QueryResult(BaseModel):
-    """Query result model holding rows returned from ClickHouse."""
-
-    rows: List[Dict[str, Any]]
-
-
-class TextQueryRequest(BaseModel):
-    """Request model for text-based queries."""
-
-    question: str
-
-
-class TextQueryResponse(BaseModel):
-    """Response model for text-based queries."""
-
-    question: str
-    answer: str
-    success: bool
-
-
-class VoiceQueryResponse(BaseModel):
-    """Response model for voice queries."""
-
-    transcription: str
-    answer: str
-    success: bool
-
-
-# -------------------- ClickHouse Tool --------------------
-
-
-@tool
-def run_clickhouse_query(sql: str) -> QueryResult:
-    """Execute a SQL query on ClickHouse and return the results as dictionaries."""
-    client = get_client()
-    query = client.query(sql)
-    rows = [dict(zip(query.column_names, row)) for row in query.result_rows]
-    return QueryResult(rows=rows)
-
-
-# -------------------- Schema Fetching --------------------
-
-
-@lru_cache(maxsize=1)
-def get_clickhouse_schema() -> str:
-    """Fetch and format the schema of all tables in the retail_dw database."""
-    client = get_client()
-    tables = client.query("SELECT name FROM system.tables WHERE database='retail_dw'")
-    table_names = [row[0] for row in tables.result_rows]
-
-    schema = {}
-    for table in table_names:
-        cols = client.query(f"""
-            SELECT name, type
-            FROM system.columns
-            WHERE database='retail_dw' AND table='{table}'
-        """)
-        schema[table] = [f"{name} {dtype}" for name, dtype in cols.result_rows]
-
-    schema_text = "\n".join(
-        f"{table} → columns: {', '.join(cols)}" for table, cols in schema.items()
-    )
-    return schema_text
-
-
-# -------------------- System Message --------------------
-
-
-def build_system_message(schema_text: str) -> str:
-    return dedent(f"""
-    You are a helpful data analyst in a retail company that helps users in
-    their questions about retail data.
-    ---
-    # Step-by-step instructions:
-    1. Analyze the question then check if you can answer it based on the available tables, if it's outside the scope of the data, tell the user that you can't assist them with their request because it's out of scope.
-    2. After gathering all the information needed, generate an sql query that gathers the data that answers the user question.
-    3. Use the tools provided to run the sql query to fetch the results from the database.
-    4. Give the user the results of the query.
-
-    ---
-
-    # Notes:
-    * The main schema is retail_dw.
-    * CHECK THE SCHEMA AND CHECK EVERY DATABASE AND EVERY SINGLE TABLE IN EACH ONE OF THEM, DO NOT WRITE A QUERY USING A COLUMN OR A TABLE THAT DOES NOT EXIST.
-    * ONLY USE THE AVAILABLE TABLES AND COLUMNS WHEN WRITING A QUERY.
-    * DO NOT ASK FOR MORE CLARIFICATIONS, JUST ANSWER.
-    * The schema contains the following tables and columns.
-
-    ### Table schema:
-    {schema_text}
-
-    ---
-
-    ### Response Format:
-    CRITICAL: Always format your final response using proper Markdown/MDX syntax.
-
-    **Required formatting rules:**
-    - Use headers for sections: # Main Title, ## Subsection, ### Details
-    - Present data results in markdown tables with proper alignment:
-      | Column 1 | Column 2 | Column 3 |
-      |----------|----------|----------|
-      | Value 1  | Value 2  | Value 3  |
-    - Use **bold** for important metrics and values
-    - Use `inline code` for column names, table names, and values
-    - Use lists (- or 1.) for multiple items or findings
-    - Use > blockquotes for important notes or warnings
-    - Add blank lines between sections for readability
-    - For numeric data, format with proper alignment (right-align numbers in tables)
-    - Always include a brief summary before detailed tables
-
-    **Example format:**
-    # Sales Analysis Results
-
-    Based on the query, here's what I found:
-
-    ## Summary
-    - Total sales: **$1,234,567**
-    - Top category: **Electronics**
-
-    ## Detailed Breakdown
-
-    | Category    | Sales ($) | Units Sold |
-    |-------------|----------:|-----------:|
-    | Electronics | 500,000   | 1,200      |
-    | Clothing    | 300,000   | 2,500      |
-
-    > Note: Data is for the current fiscal year.
-
-    ---
-    Let's begin.
-    """)
-
-
-# -------------------- Agent Setup --------------------
-
-# Initialize agent lazily to avoid startup failures
-query_agent = None
-
-
-def get_query_agent():
-    """Lazy initialization of the query agent."""
-    global query_agent
-    if query_agent is None:
-        try:
-            schema_text = get_clickhouse_schema()
-            system_message = build_system_message(schema_text)
-
-            query_agent = Agent(
-                name="ClickHouseAgent",
-                role="Data retriever for the retail_dw warehouse",
-                model=OpenAIChat(
-                    id="openai/gpt-oss-120b",
-                    api_key=api_settings.OPENAI_API_KEY,
-                    base_url=api_settings.OPENAI_BASE_URL,
-                ),
-                tools=[run_clickhouse_query],
-                system_message=system_message,
-                add_history_to_context=True,
-            )
-            print("✅ Agent initialized successfully")
-        except Exception as e:
-            print(f"❌ Agent initialization failed: {e}")
-            raise HTTPException(
-                status_code=503, detail=f"Agent initialization failed: {str(e)}"
-            )
-    return query_agent
-
-
-# -------------------- CLI --------------------
-
-
-async def cli_main():
-    """Run the interactive CLI for querying retail_dw."""
-    print("Ask a question about retail_dw. Type 'exit' to quit.\n")
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() == "exit":
-            break
-        agent = get_query_agent()
-        await agent.aprint_response(user_input, stream=True)
-
-
-# -------------------- FastAPI App --------------------
+# ---------------------------------------------------------------------------
+# FastAPI
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Retail Data Query API",
-    description="API for querying retail data warehouse via text and voice",
+    title="AI Retail Analytics Backend",
+    description=(
+        "AI-powered backend for querying retail warehouse data "
+        "through natural-language and voice interfaces."
+    ),
+    version="1.0.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # change to the frontend link in production
+    allow_origins=["*"],  # Fine for development; restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------------------- Mistral Client --------------------
-model = "voxtral-mini-latest"
-mistral_client = Mistral(api_key=api_settings.MISTRAL_API_KEY)
 
-# -------------------- API Endpoints --------------------
+# ---------------------------------------------------------------------------
+# API models
+# ---------------------------------------------------------------------------
 
-
-@app.get("/")
-async def root():
-    """Root endpoint to verify API is running."""
-    return {
-        "message": "Retail Data Query API is running",
-        "endpoints": {
-            "text_query": "/text-query",
-            "voice_query": "/voice-query",
-            "docs": "/docs",
-        },
-    }
+class TextQueryRequest(BaseModel):
+    question: str
 
 
-@app.post("/voice-query", response_model=VoiceQueryResponse)
-async def voice_query(file: UploadFile = File(...)):
+class TextQueryResponse(BaseModel):
+    question: str
+    answer: str
+
+
+class VoiceQueryResponse(BaseModel):
+    transcription: str
+    answer: str
+
+
+# ---------------------------------------------------------------------------
+# ClickHouse
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_clickhouse_client():
+    """Create and reuse a ClickHouse client."""
+
+    return clickhouse_connect.get_client(
+        host=settings.D_HOST,
+        port=settings.D_PORT,
+        username=settings.D_USER,
+        password=settings.D_PASSWORD,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_clickhouse_schema() -> str:
+    """Retrieve and cache the current ClickHouse schema."""
+
+    client = get_clickhouse_client()
+
+    result = client.query(
+        """
+        SELECT
+            table,
+            name,
+            type
+        FROM system.columns
+        WHERE database = currentDatabase()
+        ORDER BY table, position
+        """
+    )
+
+    schema = {}
+
+    for table, column, column_type in result.result_rows:
+        schema.setdefault(table, []).append(
+            f"{column} ({column_type})"
+        )
+
+    return "\n\n".join(
+        f"Table: {table}\n"
+        + "\n".join(f"- {column}" for column in columns)
+        for table, columns in schema.items()
+    )
+
+
+def validate_read_only_query(sql: str) -> str:
     """
-    Voice query endpoint.
-    1. Accepts audio file.
-    2. Transcribes it via Voxtral.
-    3. Sends transcription to query_agent.
-    4. Returns transcription and agent's answer.
+    Prevent the LLM from executing write/destructive database operations.
+
+    The agent should only be able to analyze data.
     """
+
+    query = sql.strip().rstrip(";")
+
+    if not query:
+        raise ValueError("SQL query cannot be empty.")
+
+    first_word = query.split(maxsplit=1)[0].upper()
+
+    if first_word not in {"SELECT", "WITH"}:
+        raise ValueError("Only read-only SELECT queries are allowed.")
+
+    forbidden_operations = (
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "TRUNCATE",
+        "CREATE",
+        "RENAME",
+    )
+
+    query_upper = query.upper()
+
+    if any(
+        operation in query_upper
+        for operation in forbidden_operations
+    ):
+        raise ValueError("Write operations are not allowed.")
+
+    return query
+
+
+def run_clickhouse_query(sql: str) -> list[dict]:
+    """Execute a read-only SQL query against ClickHouse."""
+
+    sql = validate_read_only_query(sql)
+
+    client = get_clickhouse_client()
+    result = client.query(sql)
+
+    return [
+        dict(zip(result.column_names, row))
+        for row in result.result_rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# LLM agent
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_agent() -> Agent:
+    """Create the retail analytics agent only once."""
+
+    schema = get_clickhouse_schema()
+
+    model = OpenAILike(
+        id="openai/gpt-oss-120b",
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+    )
+
+    return Agent(
+        model=model,
+        tools=[run_clickhouse_query],
+        instructions=[
+            "You are a retail analytics assistant.",
+            "Answer questions using the ClickHouse warehouse.",
+            "Convert user questions into valid ClickHouse SQL.",
+            "Use only tables and columns that exist in the schema.",
+            "Use the run_clickhouse_query tool to execute SQL.",
+            "Generate read-only SELECT queries only.",
+            "Never invent database results.",
+            "If the schema cannot answer the question, say so clearly.",
+            f"Database schema:\n{schema}",
+        ],
+    )
+
+
+async def process_query(question: str) -> str:
+    """Process a natural-language question through the LLM agent."""
+
+    question = question.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty.",
+        )
+
     try:
-        audio_bytes = await file.read()
+        agent = get_agent()
+        response = await agent.arun(question)
 
-        if not audio_bytes:
-            raise HTTPException(status_code=400, detail="Empty audio file")
+        if not response.content:
+            raise RuntimeError("Agent returned an empty response.")
 
-        # Transcribe audio
-        transcription_response = mistral_client.audio.transcriptions.complete(
-            model=model,
+        return str(response.content)
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to process the analytics query.",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Voice transcription
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_mistral_client() -> Mistral:
+    """Create and reuse the Mistral client."""
+
+    return Mistral(
+        api_key=settings.MISTRAL_API_KEY,
+    )
+
+
+async def transcribe_audio(file: UploadFile) -> str:
+    """Transcribe an uploaded audio query using Mistral Voxtral."""
+
+    audio_bytes = await file.read()
+
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded audio file is empty.",
+        )
+
+    client = get_mistral_client()
+
+    try:
+        # The Mistral SDK call is synchronous, so move it to a worker
+        # thread instead of blocking FastAPI's event loop.
+        transcription = await asyncio.to_thread(
+            client.audio.transcriptions.complete,
+            model="voxtral-mini-latest",
             file={
                 "content": audio_bytes,
-                "file_name": file.filename,
+                "file_name": file.filename or "audio",
             },
         )
 
-        transcription_text = transcription_response.text
-        if not transcription_text:
-            raise HTTPException(status_code=400, detail="No speech detected")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to transcribe audio.",
+        ) from exc
 
-        # Send transcription to query_agent
-        agent = get_query_agent()
-        agent_response = await agent.arun(transcription_text)
-
-        # Extract the final answer, cleaning any internal reasoning tokens
-        raw_answer = getattr(agent_response, "content", str(agent_response))
-
-        # Clean up various reasoning marker formats
-        if "assistantfinal" in raw_answer:
-
-            answer_text = raw_answer.split("assistantfinal")[-1].strip()
-        elif "<channel>final<message>" in raw_answer:
-            answer_text = raw_answer.split("<channel>final<message>")[-1].strip()
-        else:
-            answer_text = raw_answer
-
-        return VoiceQueryResponse(
-            transcription=transcription_text, answer=answer_text, success=True
+    if not transcription.text:
+        raise HTTPException(
+            status_code=502,
+            detail="Transcription returned an empty result.",
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Voice query failed: {str(e)}")
+    return transcription.text.strip()
 
 
-@app.post("/text-query", response_model=TextQueryResponse)
-async def text_query(request: TextQueryRequest):
-    """
-    Text-based query endpoint.
-    1. Accepts a text question.
-    2. Sends it to query_agent.
-    3. Returns the agent's answer in MDX markdown format.
-    """
-    try:
-        if not request.question or not request.question.strip():
-            raise HTTPException(status_code=400, detail="Question cannot be empty")
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
-        # Send question to query_agent
-        agent = get_query_agent()
-        agent_response = await agent.arun(request.question)
-
-        # Extract the final answer, cleaning any internal reasoning tokens
-        raw_answer = getattr(agent_response, "content", str(agent_response))
-
-        # Clean up various reasoning marker formats
-        if "assistantfinal" in raw_answer:
-            answer_text = raw_answer.split("assistantfinal")[-1].strip()
-        elif "<channel>final<message>" in raw_answer:
-            answer_text = raw_answer.split("<channel>final<message>")[-1].strip()
-        else:
-            answer_text = raw_answer
-
-        return TextQueryResponse(
-            question=request.question, answer=answer_text, success=True
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+@app.get("/")
+async def root():
+    return {
+        "message": "AI Retail Analytics Backend is running",
+        "docs": "/docs",
+    }
 
 
+@app.post(
+    "/text-query",
+    response_model=TextQueryResponse,
+)
+async def text_query(
+    request: TextQueryRequest,
+):
+    answer = await process_query(request.question)
+
+    return TextQueryResponse(
+        question=request.question,
+        answer=answer,
+    )
+
+
+@app.post(
+    "/voice-query",
+    response_model=VoiceQueryResponse,
+)
+async def voice_query(
+    file: UploadFile = File(...),
+):
+    transcription = await transcribe_audio(file)
+    answer = await process_query(transcription)
+
+    return VoiceQueryResponse(
+        transcription=transcription,
+        answer=answer,
+    )
 # To run the server:
 # uvicorn main:app --reload
